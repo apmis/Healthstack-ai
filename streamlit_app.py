@@ -8,12 +8,17 @@ import streamlit as st
 
 
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8010"
+DEFAULT_BACKEND_AUTH_URL = "https://backend.healthstack.africa/authentication"
 
 
 def _init_state() -> None:
     defaults = {
         "api_base_url": DEFAULT_API_BASE_URL,
+        "backend_auth_url": DEFAULT_BACKEND_AUTH_URL,
+        "backend_email": "",
+        "backend_password": "",
         "jwt_token": "",
+        "last_auth_response": None,
         "resolved_session": None,
         "selected_facility_id": "",
         "patient_results": [],
@@ -29,21 +34,13 @@ def _init_state() -> None:
             st.session_state[key] = value
 
 
-def _api_request(
+def _http_request(
     method: str,
-    path: str,
+    url: str,
     *,
     token: str | None = None,
-    params: dict[str, Any] | None = None,
     payload: dict[str, Any] | None = None,
 ) -> tuple[bool, int, Any]:
-    base_url = st.session_state.api_base_url.rstrip("/")
-    url = f"{base_url}{path}"
-    if params:
-        query = urllib.parse.urlencode({key: value for key, value in params.items() if value not in (None, "")})
-        if query:
-            url = f"{url}?{query}"
-
     data = None
     headers = {"Content-Type": "application/json"}
     if token:
@@ -65,6 +62,23 @@ def _api_request(
         return False, exc.code, parsed
     except urllib.error.URLError as exc:
         return False, 0, {"detail": str(exc.reason)}
+
+
+def _api_request(
+    method: str,
+    path: str,
+    *,
+    token: str | None = None,
+    params: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+) -> tuple[bool, int, Any]:
+    base_url = st.session_state.api_base_url.rstrip("/")
+    url = f"{base_url}{path}"
+    if params:
+        query = urllib.parse.urlencode({key: value for key, value in params.items() if value not in (None, "")})
+        if query:
+            url = f"{url}?{query}"
+    return _http_request(method, url, token=token, payload=payload)
 
 
 def _facility_options() -> list[dict[str, Any]]:
@@ -106,6 +120,25 @@ def _current_patient_id() -> str:
 def _render_sidebar() -> None:
     st.sidebar.header("Connection")
     st.session_state.api_base_url = st.sidebar.text_input("API Base URL", value=st.session_state.api_base_url)
+    st.session_state.backend_auth_url = st.sidebar.text_input(
+        "Backend Auth URL",
+        value=st.session_state.backend_auth_url,
+        help="EMR login endpoint used to fetch a JWT for copilot testing.",
+    )
+    st.sidebar.caption("EMR Login")
+    st.session_state.backend_email = st.sidebar.text_input(
+        "Email",
+        value=st.session_state.backend_email,
+        key="backend_email_input",
+    )
+    st.session_state.backend_password = st.sidebar.text_input(
+        "Password",
+        value=st.session_state.backend_password,
+        type="password",
+        key="backend_password_input",
+    )
+    if st.sidebar.button("Login via Backend", use_container_width=True):
+        _login_via_backend()
     st.session_state.jwt_token = st.sidebar.text_area(
         "Bearer JWT",
         value=st.session_state.jwt_token,
@@ -123,10 +156,51 @@ def _render_sidebar() -> None:
             st.sidebar.json(body)
 
     st.sidebar.divider()
+    if st.session_state.last_auth_response:
+        user_block = st.session_state.last_auth_response.get("user") or {}
+        user_label = user_block.get("email") or user_block.get("name") or user_block.get("_id")
+        if user_label:
+            st.sidebar.caption(f"Logged in as: {user_label}")
     st.sidebar.caption(f"Active facility: {_active_facility_label()}")
     current_patient_id = _current_patient_id()
     if current_patient_id:
         st.sidebar.caption(f"Selected patient: {current_patient_id}")
+
+
+def _login_via_backend() -> None:
+    auth_url = st.session_state.backend_auth_url.strip()
+    email = st.session_state.backend_email.strip()
+    password = st.session_state.backend_password
+    if not auth_url:
+        st.error("Provide the backend authentication URL first.")
+        return
+    if not email or not password:
+        st.error("Provide backend email and password first.")
+        return
+
+    ok, status_code, body = _http_request(
+        "POST",
+        auth_url,
+        payload={
+            "strategy": "local",
+            "email": email,
+            "password": password,
+        },
+    )
+    if not ok:
+        st.error(f"Backend login failed ({status_code})")
+        st.json(body)
+        return
+
+    access_token = body.get("accessToken") or body.get("access_token")
+    if not access_token:
+        st.error("Backend login succeeded but no access token was returned.")
+        st.json(body)
+        return
+
+    st.session_state.jwt_token = access_token
+    st.session_state.last_auth_response = body
+    st.success("Backend login succeeded. JWT loaded into the tester.")
 
 
 def _resolve_session(active_facility_id: str | None = None) -> None:
