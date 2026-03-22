@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=3)
     active_facility_id: str
+    mode: Literal["clinical", "admin"] = "clinical"
     patient_id: str | None = None
     patient_query: str | None = None
     notes_limit: int | None = None
@@ -69,6 +70,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     session: SessionContext
+    mode: Literal["clinical", "admin"] = "clinical"
     patient: PatientSearchResult | None = None
     patient_candidates: list[PatientSearchResult] = Field(default_factory=list)
     answer: str

@@ -2,10 +2,14 @@
 
 Standalone Python copilot service for the HealthStack EMR.
 
+Full API reference: [C:\HS-copilot\API_DOCUMENTATION.md](C:/HS-copilot/API_DOCUMENTATION.md)
+
 ## Purpose
 
-This service sits beside the existing Node/Feathers backend and gives doctors a
-facility-scoped chat interface over patient data.
+This service sits beside the existing Node/Feathers backend and gives:
+
+- doctors a patient-first, facility-scoped clinical copilot
+- hospital administrators a facility-first operations copilot
 
 The design follows the current EMR login flow:
 
@@ -26,6 +30,13 @@ This scaffold includes:
 - MongoDB connection layer
 - JWT-based session resolution
 - facility-scoped patient search
+- facility-scoped admin operations retrieval across:
+  - `appointments`
+  - `bills`
+  - `admissions`
+  - `employees`
+  - `clients`
+  - `locations`
 - patient summary retrieval across:
   - `clients`
   - `appointments`
@@ -67,6 +78,20 @@ The copilot now supports two pharmacy modes through the same chat endpoint:
    - "Which batch expires next?"
 
 Facility-level pharmacy inventory questions do not require `patient_id`.
+
+The chat endpoint now supports two copilot modes:
+
+1. `clinical`
+   - patient-first
+   - notes, labs, orders, appointments, patient-linked pharmacy activity
+2. `admin`
+   - facility-first
+   - appointments/patient flow
+   - billing and outstanding balances
+   - admissions/ward activity
+   - workforce breakdown
+   - patient registrations
+   - inventory risk and stock questions
 
 ## Vector indexing
 
@@ -206,6 +231,18 @@ http://127.0.0.1:8010
 - `GET /api/v1/patients/{patient_id}/summary`
 - `POST /api/v1/copilot/chat`
 
+Example admin chat payload:
+
+```json
+{
+  "question": "Give me the revenue and outstanding bills summary for this month.",
+  "active_facility_id": "YOUR_FACILITY_ID",
+  "mode": "admin",
+  "notes_limit": 5,
+  "history": []
+}
+```
+
 ## Chat configuration
 
 The chatbot now uses:
@@ -213,6 +250,10 @@ The chatbot now uses:
 - vector retrieval over `clinicaldocuments` and `labresults`
 - structured retrieval over `appointments`, `orders`, `productentries`, `admissions`, core patient data, and pharmacy inventory collections
 - optional LLM generation on top of that grounded context
+
+For admin mode, the chatbot uses facility-scoped structured retrieval for
+appointments, bills, admissions, staff, patient registrations, locations, and
+inventory summaries before handing grounded context to the LLM.
 
 To enable a real LLM-backed chatbot, set:
 
@@ -246,7 +287,9 @@ RERANKER_CANDIDATE_LIMIT=24
 ## Security model
 
 - JWT is required for doctor-facing endpoints.
+- JWT is also required for admin-facing endpoints.
 - Facility scoping is enforced server-side.
 - Patient lookups are restricted to the active facility.
+- Admin mode is facility-scoped and does not require `patient_id`.
 - The API service is read-only against MongoDB.
 - The chunk indexing job needs a separate write-capable MongoDB user.

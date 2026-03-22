@@ -25,6 +25,7 @@ def _init_state() -> None:
         "selected_patient_id": "",
         "selected_patient_label": "",
         "patient_summary": None,
+        "chat_mode": "clinical",
         "chat_history": [],
         "last_chat_response": None,
         "last_error": None,
@@ -343,27 +344,53 @@ def _render_chat_tab() -> None:
         st.warning("Resolve the session and activate a facility first.")
         return
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        patient_id = st.text_input(
-            "Patient ID (optional for pharmacy inventory questions)",
-            value=_current_patient_id(),
-            key="chat_patient_id",
-        )
-    with col2:
-        notes_limit = st.number_input("Notes limit", min_value=1, max_value=10, value=5, step=1)
-
-    patient_query = st.text_input(
-        "Patient query fallback (optional)",
-        placeholder="Use this if you want the API to resolve the patient from text",
-        key="chat_patient_query",
+    mode = st.selectbox(
+        "Copilot mode",
+        options=["clinical", "admin"],
+        index=0 if st.session_state.chat_mode == "clinical" else 1,
+        help="Clinical mode is patient-first. Admin mode is facility-first for operations, billing, admissions, staff, and inventory.",
     )
+    st.session_state.chat_mode = mode
+
+    if mode == "clinical":
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            patient_id = st.text_input(
+                "Patient ID (optional for pharmacy inventory questions)",
+                value=_current_patient_id(),
+                key="chat_patient_id",
+            )
+        with col2:
+            notes_limit = st.number_input("Notes limit", min_value=1, max_value=10, value=5, step=1)
+
+        patient_query = st.text_input(
+            "Patient query fallback (optional)",
+            placeholder="Use this if you want the API to resolve the patient from text",
+            key="chat_patient_query",
+        )
+        st.caption("Clinical mode supports patient summaries, labs, notes, orders, appointments, and patient-linked pharmacy questions.")
+    else:
+        notes_limit = st.number_input("Sources limit", min_value=1, max_value=10, value=5, step=1)
+        patient_id = ""
+        patient_query = ""
+        st.caption(
+            "Admin mode is facility-scoped and works without a patient ID. Try questions about appointments, billing, admissions, staff, or inventory."
+        )
+        st.markdown(
+            "- `What is today's appointment load and status mix?`\n"
+            "- `Give me the revenue and outstanding bills summary for this month.`\n"
+            "- `How many active admissions do we have and which wards are busiest?`\n"
+            "- `Which drugs are low in stock right now?`\n"
+            "- `What does the workforce breakdown look like in this facility?`"
+        )
 
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    chat_prompt = st.chat_input("Ask a clinical or pharmacy question")
+    chat_prompt = st.chat_input(
+        "Ask a clinical, pharmacy, or admin operations question"
+    )
     if st.button("Clear Chat", use_container_width=True):
         st.session_state.chat_history = []
         st.session_state.last_chat_response = None
@@ -376,13 +403,14 @@ def _render_chat_tab() -> None:
         payload = {
             "question": chat_prompt,
             "active_facility_id": active_facility_id,
+            "mode": mode,
             "notes_limit": int(notes_limit),
             "history": st.session_state.chat_history[:-1],
         }
-        if patient_id.strip():
+        if mode == "clinical" and patient_id.strip():
             payload["patient_id"] = patient_id.strip()
             st.session_state.selected_patient_id = patient_id.strip()
-        elif patient_query.strip():
+        elif mode == "clinical" and patient_query.strip():
             payload["patient_query"] = patient_query.strip()
 
         ok, status_code, body = _api_request(
@@ -400,8 +428,9 @@ def _render_chat_tab() -> None:
             assistant_text = body.get("answer") or ""
             st.session_state.last_chat_response = body
             st.session_state.chat_history.append({"role": "assistant", "content": assistant_text})
-            if body.get("patient", {}).get("patient_id"):
-                st.session_state.selected_patient_id = body["patient"]["patient_id"]
+            patient_block = body.get("patient") or {}
+            if patient_block.get("patient_id"):
+                st.session_state.selected_patient_id = patient_block["patient_id"]
         st.rerun()
 
     response = st.session_state.last_chat_response
@@ -422,7 +451,7 @@ def main() -> None:
     _init_state()
     st.set_page_config(page_title="HS Copilot API Tester", layout="wide")
     st.title("HS Copilot API Tester")
-    st.caption("Streamlit console for testing the FastAPI copilot endpoints with an EMR JWT.")
+    st.caption("Streamlit console for testing the FastAPI clinical and admin copilot endpoints with an EMR JWT.")
 
     _render_sidebar()
 

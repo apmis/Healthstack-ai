@@ -133,7 +133,132 @@ def _build_context_payload(
     }
 
 
-def _system_prompt() -> str:
+def _build_admin_context_payload(
+    session: SessionContext,
+    structured_context: dict[str, Any],
+    sources: list[RetrievedSource],
+) -> dict[str, Any]:
+    billing = structured_context.get("billing") or {}
+    admissions = structured_context.get("admissions") or {}
+    workforce = structured_context.get("workforce") or {}
+    patients = structured_context.get("patients") or {}
+    appointments = structured_context.get("appointments") or {}
+    pharmacy_inventory = structured_context.get("pharmacy_inventory") or {}
+
+    return {
+        "session": {
+            "active_facility_id": session.active_facility_id,
+            "active_facility_name": session.active_facility_name,
+            "roles": session.roles,
+            "accesslevel": session.accesslevel,
+        },
+        "time_window": structured_context.get("time_window"),
+        "domains": structured_context.get("domains"),
+        "appointments": {
+            "window_total": appointments.get("window_total"),
+            "status_breakdown": appointments.get("status_breakdown"),
+            "location_breakdown": appointments.get("location_breakdown"),
+            "recent": _summarize_documents(
+                appointments.get("recent", []),
+                ["appointment_reason", "appointment_status", "start_time", "practitioner_name", "location_name"],
+            ),
+            "upcoming": _summarize_documents(
+                appointments.get("upcoming", []),
+                ["appointment_reason", "appointment_status", "start_time", "practitioner_name", "location_name"],
+            ),
+        },
+        "billing": {
+            "window_total": billing.get("window_total"),
+            "totals": billing.get("totals"),
+            "status_breakdown": billing.get("status_breakdown"),
+            "top_services": billing.get("top_services"),
+            "recent": _summarize_documents(
+                billing.get("recent", []),
+                ["billing_status", "createdAt", "serviceInfo", "paymentInfo", "participantInfo"],
+            ),
+        },
+        "admissions": {
+            "active_count": admissions.get("active_count"),
+            "window_total": admissions.get("window_total"),
+            "ward_breakdown": admissions.get("ward_breakdown"),
+            "recent": _summarize_documents(
+                admissions.get("recent", []),
+                ["ward_name", "bed", "status", "start_time", "createdAt"],
+            ),
+        },
+        "workforce": {
+            "total_employees": workforce.get("total_employees"),
+            "profession_breakdown": workforce.get("profession_breakdown"),
+            "position_breakdown": workforce.get("position_breakdown"),
+            "role_breakdown": workforce.get("role_breakdown"),
+            "assigned_location_count": workforce.get("assigned_location_count"),
+            "recent": _summarize_documents(
+                workforce.get("recent", []),
+                ["firstname", "lastname", "profession", "position", "department", "roles", "createdAt"],
+            ),
+        },
+        "patients": {
+            "total_patients": patients.get("total_patients"),
+            "new_registrations": patients.get("new_registrations"),
+            "recent": _summarize_documents(
+                patients.get("recent", []),
+                ["firstname", "lastname", "gender", "phone", "mrn", "hs_id", "createdAt"],
+            ),
+        },
+        "pharmacy_inventory": {
+            "scope": pharmacy_inventory.get("scope"),
+            "matched_products": _summarize_documents(
+                pharmacy_inventory.get("matched_products", []),
+                ["name", "generic", "category", "classification", "subclassification", "baseunit"],
+                limit=5,
+            ),
+            "inventory_matches": _summarize_documents(
+                pharmacy_inventory.get("inventory_matches", []),
+                ["name", "quantity", "reorder_level", "store_name", "updatedAt"],
+                limit=5,
+            ),
+            "recent_inventory_transactions": _summarize_documents(
+                pharmacy_inventory.get("recent_inventory_transactions", []),
+                ["name", "type", "transactioncategory", "quantity", "amount", "store_name", "createdAt"],
+                limit=5,
+            ),
+            "recent_inventory_dispenses": _summarize_documents(
+                pharmacy_inventory.get("recent_inventory_dispenses", []),
+                ["type", "source", "transactioncategory", "productitems", "store_name", "createdAt"],
+                limit=5,
+            ),
+            "low_stock_items": _summarize_documents(
+                pharmacy_inventory.get("low_stock_items", []),
+                ["name", "quantity", "reorder_level", "store_name", "updatedAt"],
+                limit=5,
+            ),
+            "expiring_batches": _summarize_documents(
+                pharmacy_inventory.get("expiring_batches", []),
+                ["name", "batchNo", "quantity", "expirydate", "store_name"],
+                limit=5,
+            ),
+        },
+        "sources": [
+            {
+                "label": _source_label(source),
+                "snippet": source.snippet,
+                "score": source.score,
+            }
+            for source in sources
+        ],
+    }
+
+
+def _system_prompt(mode: str) -> str:
+    if mode == "admin":
+        return (
+            "You are HealthStack Copilot, a facility-scoped hospital operations assistant for administrators. "
+            "Answer only from the supplied EMR and operations context. "
+            "Do not invent counts, revenue figures, appointments, bills, admissions, staffing levels, stock counts, expiry dates, or payments. "
+            "If the context is insufficient, say exactly what is missing. "
+            "Prefer concise operational language. "
+            "When citing evidence, use inline references like [collection | title | date]."
+        )
     return (
         "You are HealthStack Copilot, a facility-scoped clinical and pharmacy operations assistant for doctors. "
         "Answer only from the supplied EMR context. "
@@ -152,17 +277,21 @@ def _build_user_prompt(
     patient: PatientSearchResult | None,
     structured_context: dict[str, Any],
     sources: list[RetrievedSource],
+    mode: str,
 ) -> str:
-    payload = _build_context_payload(session, patient, structured_context, sources)
+    if mode == "admin":
+        payload = _build_admin_context_payload(session, structured_context, sources)
+    else:
+        payload = _build_context_payload(session, patient, structured_context, sources)
     return (
         f"Question:\n{question}\n\n"
         "Grounded EMR context:\n"
         f"{json.dumps(payload, indent=2, default=str)}\n\n"
         "Instructions:\n"
-        "- Answer the doctor's question directly.\n"
+        f"- Answer the {'administrator' if mode == 'admin' else 'doctor'}'s question directly.\n"
         "- Distinguish confirmed facts from likely inferences.\n"
         "- If there is no evidence for a requested claim, say so.\n"
-        "- Mention key appointments, orders, pharmacy dispenses, inventory status, batches, expiry dates, labs, and notes only if relevant.\n"
+        "- Mention key appointments, bills, admissions, workforce counts, inventory status, batches, expiry dates, orders, labs, and notes only if relevant.\n"
         "- End with a short 'Sources:' line if any narrative or structured evidence was used."
     )
 
@@ -177,6 +306,7 @@ class ChatProvider(ABC):
         patient: PatientSearchResult | None,
         structured_context: dict[str, Any],
         sources: list[RetrievedSource],
+        mode: str = "clinical",
     ) -> str:
         raise NotImplementedError
 
@@ -238,14 +368,15 @@ class OpenAIChatProvider(ChatProvider):
         patient: PatientSearchResult | None,
         structured_context: dict[str, Any],
         sources: list[RetrievedSource],
+        mode: str = "clinical",
     ) -> str:
-        messages = [{"role": "system", "content": _system_prompt()}]
+        messages = [{"role": "system", "content": _system_prompt(mode)}]
         for message in history[-6:]:
             messages.append({"role": message.role, "content": message.content})
         messages.append(
             {
                 "role": "user",
-                "content": _build_user_prompt(question, session, patient, structured_context, sources),
+                "content": _build_user_prompt(question, session, patient, structured_context, sources, mode),
             }
         )
         return self._request_chat_completion(messages)
@@ -319,14 +450,15 @@ class OpenRouterChatProvider(ChatProvider):
         patient: PatientSearchResult | None,
         structured_context: dict[str, Any],
         sources: list[RetrievedSource],
+        mode: str = "clinical",
     ) -> str:
-        messages = [{"role": "system", "content": _system_prompt()}]
+        messages = [{"role": "system", "content": _system_prompt(mode)}]
         for message in history[-6:]:
             messages.append({"role": message.role, "content": message.content})
         messages.append(
             {
                 "role": "user",
-                "content": _build_user_prompt(question, session, patient, structured_context, sources),
+                "content": _build_user_prompt(question, session, patient, structured_context, sources, mode),
             }
         )
         return self._request_chat_completion(messages)

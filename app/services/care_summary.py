@@ -83,6 +83,23 @@ def _pharmacy_inventory_lines(summary: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_amount(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:,.2f}"
+    return str(value)
+
+
+def _render_breakdown(items: list[dict[str, Any]], label_key: str = "label", count_key: str = "count", limit: int = 3) -> str | None:
+    parts = []
+    for item in items[:limit]:
+        label = item.get(label_key)
+        count = item.get(count_key)
+        if label in (None, "") or count in (None, ""):
+            continue
+        parts.append(f"{label} ({count})")
+    return ", ".join(parts) if parts else None
+
+
 def generate_answer(
     question: str,
     patient: PatientSearchResult | None,
@@ -171,4 +188,112 @@ def generate_answer(
         lines.append(f"No matching supporting record was found for '{question}'.")
 
     lines.append("This answer is retrieval-based from MongoDB records and has not applied an LLM yet.")
+    return " ".join(lines)
+
+
+def generate_admin_answer(
+    question: str,
+    summary: dict[str, Any],
+    sources: list[RetrievedSource],
+    session: SessionContext,
+) -> str:
+    lines: list[str] = []
+    time_window = summary.get("time_window") or {}
+    label = time_window.get("label") or "current"
+    days = time_window.get("days")
+    domains = summary.get("domains") or []
+
+    lines.append(
+        "Facility context: "
+        f"{session.active_facility_name or 'Unknown Facility'} "
+        f"({session.active_facility_id or 'facility id unavailable'})."
+    )
+    if label == "today":
+        lines.append("Reporting window: today.")
+    elif days:
+        lines.append(f"Reporting window: last {days} days ({label}).")
+
+    appointments = summary.get("appointments") or {}
+    if appointments:
+        line = f"Appointments: {appointments.get('window_total', 0)} records in window."
+        status_line = _render_breakdown(appointments.get("status_breakdown", []))
+        location_line = _render_breakdown(appointments.get("location_breakdown", []))
+        if status_line:
+            line += f" Status mix: {status_line}."
+        if location_line:
+            line += f" Top locations: {location_line}."
+        lines.append(line)
+
+    billing = summary.get("billing") or {}
+    if billing:
+        totals = billing.get("totals") or {}
+        line = (
+            "Billing: "
+            f"{billing.get('window_total', 0)} bills, "
+            f"service value { _format_amount(totals.get('service_amount', 0)) }, "
+            f"paid { _format_amount(totals.get('amount_paid', 0)) }, "
+            f"outstanding { _format_amount(totals.get('outstanding_balance', 0)) }."
+        )
+        status_line = _render_breakdown(billing.get("status_breakdown", []))
+        if status_line:
+            line += f" Status mix: {status_line}."
+        top_services = billing.get("top_services") or []
+        if top_services:
+            service_bits = ", ".join(
+                f"{item.get('service_name')} ({_format_amount(item.get('amount'))})"
+                for item in top_services[:3]
+                if item.get("service_name")
+            )
+            if service_bits:
+                line += f" Top services: {service_bits}."
+        lines.append(line)
+
+    admissions = summary.get("admissions") or {}
+    if admissions:
+        line = (
+            "Admissions: "
+            f"{admissions.get('active_count', 0)} active and "
+            f"{admissions.get('window_total', 0)} started in the window."
+        )
+        ward_line = _render_breakdown(admissions.get("ward_breakdown", []))
+        if ward_line:
+            line += f" Ward mix: {ward_line}."
+        lines.append(line)
+
+    workforce = summary.get("workforce") or {}
+    if workforce:
+        line = f"Workforce: {workforce.get('total_employees', 0)} employees."
+        profession_line = _render_breakdown(workforce.get("profession_breakdown", []))
+        position_line = _render_breakdown(workforce.get("position_breakdown", []))
+        if profession_line:
+            line += f" Top professions: {profession_line}."
+        if position_line:
+            line += f" Top positions: {position_line}."
+        lines.append(line)
+
+    patients = summary.get("patients") or {}
+    if patients:
+        lines.append(
+            "Patient registrations: "
+            f"{patients.get('total_patients', 0)} total patients, "
+            f"{patients.get('new_registrations', 0)} new in the reporting window."
+        )
+
+    lines.extend(_pharmacy_inventory_lines(summary))
+
+    if not domains:
+        lines.append("No domain routing was inferred from the question, so the answer used the broad facility snapshot.")
+
+    if sources:
+        top_sources = "; ".join(
+            filter(
+                None,
+                [f"{source.collection}:{source.title or source.document_id}" for source in sources[:4]],
+            )
+        )
+        lines.append(f"Evidence used for '{question}': {top_sources}.")
+    else:
+        lines.append(f"No matching supporting record was found for '{question}'.")
+
+    lines.append("This answer is retrieval-based from facility operations data and has not applied an LLM yet.")
     return " ".join(lines)

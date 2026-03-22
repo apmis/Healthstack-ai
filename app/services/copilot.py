@@ -2,7 +2,8 @@ from fastapi import HTTPException, status
 
 from app.core.config import get_settings
 from app.models.schemas import ChatRequest, ChatResponse
-from app.services.care_summary import generate_answer
+from app.services.admin_retriever import build_admin_sources, build_admin_summary
+from app.services.care_summary import generate_admin_answer, generate_answer
 from app.services.context import require_session
 from app.services.llm import get_chat_provider
 from app.services.patient_resolver import get_patient_or_404, search_patients
@@ -31,6 +32,54 @@ def _deduplicate_sources(sources):
 
 def respond_to_chat(token: str, payload: ChatRequest) -> ChatResponse:
     session = require_session(token, payload.active_facility_id)
+    if payload.mode == "admin":
+        return _respond_to_admin_chat(session, payload)
+
+    return _respond_to_clinical_chat(session, payload)
+
+
+def _respond_to_admin_chat(session, payload: ChatRequest) -> ChatResponse:
+    settings = get_settings()
+    notes_limit = max(1, payload.notes_limit or settings.default_notes_limit)
+    summary = build_admin_summary(
+        session.active_facility_id,
+        payload.question,
+        location_ids=session.location_ids,
+    )
+    sources = build_admin_sources(summary, payload.question, limit=notes_limit)
+
+    answer_mode = "retrieval_fallback"
+    answer = generate_admin_answer(payload.question, summary, sources, session)
+    try:
+        provider = get_chat_provider()
+    except RuntimeError:
+        provider = None
+    if provider is not None:
+        try:
+            answer = provider.generate(
+                question=payload.question,
+                history=payload.history,
+                session=session,
+                patient=None,
+                structured_context=summary,
+                sources=sources,
+                mode="admin",
+            )
+            answer_mode = f"llm_{settings.llm_provider.lower()}"
+        except RuntimeError:
+            answer_mode = "retrieval_fallback"
+
+    return ChatResponse(
+        session=session,
+        mode="admin",
+        answer=answer,
+        answer_mode=answer_mode,
+        sources=sources,
+        structured_context=summary,
+    )
+
+
+def _respond_to_clinical_chat(session, payload: ChatRequest) -> ChatResponse:
     pharmacy_intent = is_pharmacy_question(payload.question)
     inventory_intent = is_inventory_question(payload.question)
     if not inventory_intent and not payload.patient_id and not payload.patient_query:
@@ -112,6 +161,7 @@ def respond_to_chat(token: str, payload: ChatRequest) -> ChatResponse:
                 patient=patient,
                 structured_context=summary,
                 sources=sources,
+                mode="clinical",
             )
             settings = get_settings()
             answer_mode = f"llm_{settings.llm_provider.lower()}"
@@ -119,6 +169,7 @@ def respond_to_chat(token: str, payload: ChatRequest) -> ChatResponse:
             answer_mode = "retrieval_fallback"
     return ChatResponse(
         session=session,
+        mode="clinical",
         patient=patient,
         answer=answer,
         answer_mode=answer_mode,
