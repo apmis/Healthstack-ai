@@ -3,7 +3,10 @@ import os
 import sys
 from pathlib import Path
 
-import msvcrt
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 _LOCK_HANDLES: dict[Path, object] = {}
 
@@ -13,7 +16,10 @@ def acquire_script_lock(lock_path: Path) -> None:
     handle = open(lock_path, "a+b")
     try:
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        if os.name == "nt":
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         message = "Another instance is already running."
         try:
@@ -41,7 +47,10 @@ def acquire_script_lock(lock_path: Path) -> None:
             lock_handle.seek(0)
             lock_handle.truncate()
             lock_handle.seek(0)
-            msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            if os.name == "nt":
+                msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         finally:
             lock_handle.close()
 
