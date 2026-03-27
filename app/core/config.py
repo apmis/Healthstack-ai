@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8010
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_allow_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     mongodb: str
     mongodb_db: str = "healthstackv2"
     jwt_secret: str = "/bPj3Lp34XPy8ceLi/pwBW8ymvc="

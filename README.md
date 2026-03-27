@@ -104,6 +104,10 @@ CORS_ALLOW_ORIGINS=http://localhost:5173,https://your-frontend-domain.com
 The API now applies FastAPI `CORSMiddleware` using that comma-separated env var.
 Include every browser origin that should be allowed to call the API.
 
+By default, the API also allows any `localhost` or `127.0.0.1` origin on any
+port through `CORS_ALLOW_ORIGIN_REGEX`, which is useful for local frontend
+testing from different laptops and dev servers.
+
 ## Vector indexing
 
 Narrative retrieval is now designed around a dedicated `copilot_chunks`
