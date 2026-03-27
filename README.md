@@ -93,6 +93,17 @@ The chat endpoint now supports two copilot modes:
    - patient registrations
    - inventory risk and stock questions
 
+## CORS
+
+If you are calling the API from a browser frontend, set the allowed origins with:
+
+```env
+CORS_ALLOW_ORIGINS=http://localhost:5173,https://your-frontend-domain.com
+```
+
+The API now applies FastAPI `CORSMiddleware` using that comma-separated env var.
+Include every browser origin that should be allowed to call the API.
+
 ## Vector indexing
 
 Narrative retrieval is now designed around a dedicated `copilot_chunks`
