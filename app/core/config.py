@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "HS Copilot"
     api_host: str = "127.0.0.1"
     api_port: int = 8010
+    cors_allow_all: bool = True
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     cors_allow_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     mongodb: str

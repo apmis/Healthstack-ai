@@ -108,6 +108,15 @@ By default, the API also allows any `localhost` or `127.0.0.1` origin on any
 port through `CORS_ALLOW_ORIGIN_REGEX`, which is useful for local frontend
 testing from different laptops and dev servers.
 
+For temporary unrestricted browser testing across any frontend origin, set:
+
+```env
+CORS_ALLOW_ALL=true
+```
+
+When `CORS_ALLOW_ALL=true`, the API returns wildcard CORS headers and disables
+credentialed CORS responses. Tighten this before production use.
+
 ## Vector indexing
 
 Narrative retrieval is now designed around a dedicated `copilot_chunks`
