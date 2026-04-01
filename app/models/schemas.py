@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FacilityOption(BaseModel):
@@ -59,13 +59,21 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    question: str = Field(min_length=3)
+    question: str = Field(min_length=1)
     active_facility_id: str
     mode: Literal["clinical", "admin"] = "clinical"
     patient_id: str | None = None
     patient_query: str | None = None
     notes_limit: int | None = None
     history: list[ChatMessage] = Field(default_factory=list)
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Question cannot be empty.")
+        return cleaned
 
 
 class ChatResponse(BaseModel):
