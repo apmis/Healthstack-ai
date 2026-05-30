@@ -8,7 +8,13 @@ from datetime import datetime
 from typing import Any
 
 from app.core.config import get_settings
-from app.models.schemas import ChatMessage, PatientSearchResult, RetrievedSource, SessionContext
+from app.models.schemas import (
+    ChatMessage,
+    PatientSearchResult,
+    ReferralNoteDraftRequest,
+    RetrievedSource,
+    SessionContext,
+)
 
 
 def _format_datetime(value: Any) -> str | None:
@@ -296,6 +302,53 @@ def _build_user_prompt(
     )
 
 
+def _referral_system_prompt() -> str:
+    return (
+        "You are HealthStack Copilot, drafting a referral note for a doctor. "
+        "Use only the supplied EMR context. "
+        "Do not invent diagnoses, results, treatments, allergies, medications, timelines, or receiving-facility details. "
+        "If clinically important information is missing, state that it is not available in the provided record. "
+        "Write in a professional referral-note style suitable for clinician review and editing."
+    )
+
+
+def _build_referral_user_prompt(
+    request: ReferralNoteDraftRequest,
+    session: SessionContext,
+    patient: PatientSearchResult,
+    structured_context: dict[str, Any],
+    sources: list[RetrievedSource],
+) -> str:
+    payload = _build_context_payload(session, patient, structured_context, sources)
+    referral_context = {
+        "draft_date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "referral_reason": request.referral_reason,
+        "referring_to": request.referring_to,
+        "specialty": request.specialty,
+        "urgency": request.urgency,
+        "additional_instructions": request.additional_instructions,
+    }
+    return (
+        "Draft a referral note using this referral request and grounded EMR context.\n\n"
+        f"Referral request:\n{json.dumps(referral_context, indent=2, default=str)}\n\n"
+        f"Grounded EMR context:\n{json.dumps(payload, indent=2, default=str)}\n\n"
+        "Required structure:\n"
+        "- Referral note title\n"
+        "- Date, using draft_date exactly\n"
+        "- Referring facility\n"
+        "- Patient identifiers\n"
+        "- Reason for referral\n"
+        "- Relevant clinical summary\n"
+        "- Relevant investigations and results\n"
+        "- Current treatments, orders, or medications if available\n"
+        "- Specific request to receiving clinician\n"
+        "- Missing information or caveats\n"
+        "- Sources line with cited evidence used\n\n"
+        "Do not invent a different date, patient age, unavailable diagnosis, or unavailable investigation result.\n"
+        "Keep it concise, clinically useful, and ready for the doctor to review before sending."
+    )
+
+
 class ChatProvider(ABC):
     @abstractmethod
     def generate(
@@ -307,6 +360,17 @@ class ChatProvider(ABC):
         structured_context: dict[str, Any],
         sources: list[RetrievedSource],
         mode: str = "clinical",
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def generate_referral_note(
+        self,
+        request: ReferralNoteDraftRequest,
+        session: SessionContext,
+        patient: PatientSearchResult,
+        structured_context: dict[str, Any],
+        sources: list[RetrievedSource],
     ) -> str:
         raise NotImplementedError
 
@@ -379,6 +443,23 @@ class OpenAIChatProvider(ChatProvider):
                 "content": _build_user_prompt(question, session, patient, structured_context, sources, mode),
             }
         )
+        return self._request_chat_completion(messages)
+
+    def generate_referral_note(
+        self,
+        request: ReferralNoteDraftRequest,
+        session: SessionContext,
+        patient: PatientSearchResult,
+        structured_context: dict[str, Any],
+        sources: list[RetrievedSource],
+    ) -> str:
+        messages = [
+            {"role": "system", "content": _referral_system_prompt()},
+            {
+                "role": "user",
+                "content": _build_referral_user_prompt(request, session, patient, structured_context, sources),
+            },
+        ]
         return self._request_chat_completion(messages)
 
 
@@ -461,6 +542,23 @@ class OpenRouterChatProvider(ChatProvider):
                 "content": _build_user_prompt(question, session, patient, structured_context, sources, mode),
             }
         )
+        return self._request_chat_completion(messages)
+
+    def generate_referral_note(
+        self,
+        request: ReferralNoteDraftRequest,
+        session: SessionContext,
+        patient: PatientSearchResult,
+        structured_context: dict[str, Any],
+        sources: list[RetrievedSource],
+    ) -> str:
+        messages = [
+            {"role": "system", "content": _referral_system_prompt()},
+            {
+                "role": "user",
+                "content": _build_referral_user_prompt(request, session, patient, structured_context, sources),
+            },
+        ]
         return self._request_chat_completion(messages)
 
 

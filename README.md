@@ -254,6 +254,7 @@ http://127.0.0.1:8010
 - `GET /api/v1/patients/search`
 - `GET /api/v1/patients/{patient_id}/summary`
 - `POST /api/v1/copilot/chat`
+- `POST /api/v1/copilot/referral-note/draft`
 
 Example admin chat payload:
 
@@ -264,6 +265,21 @@ Example admin chat payload:
   "mode": "admin",
   "notes_limit": 5,
   "history": []
+}
+```
+
+Example referral-note draft payload:
+
+```json
+{
+  "active_facility_id": "YOUR_FACILITY_ID",
+  "patient_id": "PATIENT_ID",
+  "referral_reason": "Persistent uncontrolled hypertension with abnormal renal function.",
+  "referring_to": "Nephrology clinic",
+  "specialty": "Nephrology",
+  "urgency": "urgent",
+  "notes_limit": 5,
+  "additional_instructions": "Keep the note concise and include recent relevant labs."
 }
 ```
 

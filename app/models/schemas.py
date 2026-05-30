@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class FacilityOption(BaseModel):
@@ -83,6 +83,43 @@ class ChatResponse(BaseModel):
     patient_candidates: list[PatientSearchResult] = Field(default_factory=list)
     answer: str
     answer_mode: str = "retrieval_fallback"
+    sources: list[RetrievedSource] = Field(default_factory=list)
+    structured_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReferralNoteDraftRequest(BaseModel):
+    active_facility_id: str
+    patient_id: str | None = None
+    patient_query: str | None = None
+    referral_reason: str = Field(min_length=1)
+    referring_to: str | None = None
+    specialty: str | None = None
+    urgency: Literal["routine", "urgent", "emergency"] = "routine"
+    notes_limit: int | None = None
+    additional_instructions: str | None = None
+
+    @field_validator("referral_reason", "additional_instructions", mode="before")
+    @classmethod
+    def clean_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def require_patient_selector(self):
+        if not self.patient_id and not self.patient_query:
+            raise ValueError("Provide patient_id or patient_query.")
+        return self
+
+
+class ReferralNoteDraftResponse(BaseModel):
+    session: SessionContext
+    patient: PatientSearchResult | None = None
+    patient_candidates: list[PatientSearchResult] = Field(default_factory=list)
+    draft_note: str | None = None
+    draft_mode: str = "retrieval_fallback"
+    message: str | None = None
     sources: list[RetrievedSource] = Field(default_factory=list)
     structured_context: dict[str, Any] = Field(default_factory=dict)
 
