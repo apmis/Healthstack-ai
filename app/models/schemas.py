@@ -124,6 +124,21 @@ class ReferralNoteDraftResponse(BaseModel):
     structured_context: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReferralNoteDocxRequest(BaseModel):
+    active_facility_id: str
+    patient_id: str
+    final_note: str = Field(min_length=1)
+    filename: str | None = None
+
+    @field_validator("patient_id", "final_note", "filename", mode="before")
+    @classmethod
+    def clean_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+
 class PatientSummaryResponse(BaseModel):
     session: SessionContext
     patient: PatientSearchResult

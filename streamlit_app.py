@@ -28,6 +28,10 @@ def _init_state() -> None:
         "chat_mode": "clinical",
         "chat_history": [],
         "last_chat_response": None,
+        "referral_response": None,
+        "referral_final_note": "",
+        "referral_docx_bytes": None,
+        "referral_docx_filename": "referral_note.docx",
         "last_error": None,
     }
     for key, value in defaults.items():
@@ -80,6 +84,47 @@ def _api_request(
         if query:
             url = f"{url}?{query}"
     return _http_request(method, url, token=token, payload=payload)
+
+
+def _api_binary_request(
+    method: str,
+    path: str,
+    *,
+    token: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> tuple[bool, int, bytes | Any, dict[str, str]]:
+    base_url = st.session_state.api_base_url.rstrip("/")
+    url = f"{base_url}{path}"
+    data = None
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token.strip()}"
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return True, response.status, response.read(), dict(response.headers)
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(error_body)
+        except json.JSONDecodeError:
+            parsed = {"detail": error_body}
+        return False, exc.code, parsed, dict(exc.headers)
+    except urllib.error.URLError as exc:
+        return False, 0, {"detail": str(exc.reason)}, {}
+
+
+def _filename_from_content_disposition(header_value: str | None) -> str | None:
+    if not header_value:
+        return None
+    for part in header_value.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "filename" and value:
+            return value.strip('"')
+    return None
 
 
 def _facility_options() -> list[dict[str, Any]]:
@@ -447,6 +492,148 @@ def _render_chat_tab() -> None:
             st.json(response)
 
 
+def _render_referral_note_tab() -> None:
+    st.subheader("Referral Note")
+    active_facility_id = _active_facility_id()
+    if not active_facility_id:
+        st.warning("Resolve the session and activate a facility first.")
+        return
+
+    st.caption("Draft the referral note, edit it, then export the final doctor-approved text as a Word document.")
+    with st.form("referral_note_form"):
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            patient_id = st.text_input("Patient ID", value=_current_patient_id(), key="referral_patient_id")
+            patient_query = st.text_input(
+                "Patient query fallback",
+                placeholder="Use this only if patient_id is empty",
+                key="referral_patient_query",
+            )
+            referral_reason = st.text_area(
+                "Referral reason",
+                placeholder="Example: recurrent chest pain and abnormal ECG requiring cardiology review",
+                key="referral_reason",
+            )
+        with col2:
+            referring_to = st.text_input("Referring to", placeholder="Receiving clinician/facility", key="referring_to")
+            specialty = st.text_input("Specialty", placeholder="Cardiology, nephrology, etc.", key="referral_specialty")
+            urgency = st.selectbox("Urgency", options=["routine", "urgent", "emergency"], key="referral_urgency")
+            notes_limit = st.number_input("Sources limit", min_value=1, max_value=10, value=5, step=1)
+        additional_instructions = st.text_area(
+            "Additional instructions",
+            placeholder="Optional instructions for the draft",
+            key="referral_additional_instructions",
+        )
+        submitted = st.form_submit_button("Draft Referral Note", use_container_width=True)
+
+    if submitted:
+        if not referral_reason.strip():
+            st.error("Provide a referral reason.")
+        elif not patient_id.strip() and not patient_query.strip():
+            st.error("Provide a patient ID or patient query.")
+        else:
+            payload = {
+                "active_facility_id": active_facility_id,
+                "referral_reason": referral_reason.strip(),
+                "referring_to": referring_to.strip() or None,
+                "specialty": specialty.strip() or None,
+                "urgency": urgency,
+                "notes_limit": int(notes_limit),
+                "additional_instructions": additional_instructions.strip() or None,
+            }
+            if patient_id.strip():
+                payload["patient_id"] = patient_id.strip()
+            else:
+                payload["patient_query"] = patient_query.strip()
+
+            ok, status_code, body = _api_request(
+                "POST",
+                "/api/v1/copilot/referral-note/draft",
+                token=st.session_state.jwt_token,
+                payload=payload,
+            )
+            if not ok:
+                st.error(f"Referral draft failed ({status_code})")
+                st.json(body)
+            else:
+                st.session_state.referral_response = body
+                st.session_state.referral_final_note = body.get("draft_note") or ""
+                st.session_state.referral_docx_bytes = None
+                patient_block = body.get("patient") or {}
+                if patient_block.get("patient_id"):
+                    st.session_state.selected_patient_id = patient_block["patient_id"]
+
+    response = st.session_state.referral_response
+    if not response:
+        return
+
+    if response.get("message"):
+        st.info(response["message"])
+    if response.get("patient_candidates"):
+        st.warning("Multiple patients matched. Select one patient_id and draft again.")
+        st.json(response["patient_candidates"])
+        return
+
+    patient_block = response.get("patient") or {}
+    resolved_patient_id = patient_block.get("patient_id") or _current_patient_id()
+    if response.get("draft_note"):
+        st.caption(f"Draft mode: {response.get('draft_mode', 'unknown')}")
+        st.session_state.referral_final_note = st.text_area(
+            "Editable final referral note",
+            value=st.session_state.referral_final_note,
+            height=520,
+            key="referral_final_note_editor",
+        )
+        filename = st.text_input(
+            "DOCX filename",
+            value=st.session_state.referral_docx_filename,
+            key="referral_docx_filename_input",
+        )
+        if st.button("Generate DOCX", use_container_width=True):
+            if not resolved_patient_id:
+                st.error("No resolved patient_id is available for export.")
+            elif not st.session_state.referral_final_note.strip():
+                st.error("Final referral note cannot be empty.")
+            else:
+                export_payload = {
+                    "active_facility_id": active_facility_id,
+                    "patient_id": resolved_patient_id,
+                    "final_note": st.session_state.referral_final_note.strip(),
+                    "filename": filename.strip() or None,
+                }
+                ok, status_code, body, headers = _api_binary_request(
+                    "POST",
+                    "/api/v1/copilot/referral-note/docx",
+                    token=st.session_state.jwt_token,
+                    payload=export_payload,
+                )
+                if not ok:
+                    st.error(f"DOCX export failed ({status_code})")
+                    st.json(body)
+                else:
+                    st.session_state.referral_docx_bytes = body
+                    st.session_state.referral_docx_filename = (
+                        _filename_from_content_disposition(headers.get("Content-Disposition"))
+                        or filename
+                        or "referral_note.docx"
+                    )
+                    st.success("DOCX generated.")
+
+        if st.session_state.referral_docx_bytes:
+            st.download_button(
+                "Download Referral DOCX",
+                data=st.session_state.referral_docx_bytes,
+                file_name=st.session_state.referral_docx_filename,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+
+        with st.expander("Sources", expanded=False):
+            _render_sources(response.get("sources") or [])
+        with st.expander("Raw Draft Response"):
+            st.json(response)
+
+
 def main() -> None:
     _init_state()
     st.set_page_config(page_title="HS Copilot API Tester", layout="wide")
@@ -455,8 +642,8 @@ def main() -> None:
 
     _render_sidebar()
 
-    session_tab, search_tab, summary_tab, chat_tab = st.tabs(
-        ["Session", "Patient Search", "Summary", "Chat"]
+    session_tab, search_tab, summary_tab, chat_tab, referral_tab = st.tabs(
+        ["Session", "Patient Search", "Summary", "Chat", "Referral Note"]
     )
     with session_tab:
         _render_session_tab()
@@ -466,6 +653,8 @@ def main() -> None:
         _render_summary_tab()
     with chat_tab:
         _render_chat_tab()
+    with referral_tab:
+        _render_referral_note_tab()
 
 
 if __name__ == "__main__":
