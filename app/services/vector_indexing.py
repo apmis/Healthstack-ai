@@ -209,6 +209,63 @@ def delete_source_document_chunks(source_collection: str, source_document_id: st
     return result.deleted_count
 
 
+def cleanup_stale_source_chunks(source_collection: str, batch_size: int = 500) -> dict[str, int]:
+    db = get_database()
+    settings = get_settings()
+    target_collection = db[settings.vector_chunks_collection]
+    pipeline = [
+        {"$match": {"source_collection": source_collection}},
+        {"$group": {"_id": "$source_document_id"}},
+        {
+            "$lookup": {
+                "from": source_collection,
+                "let": {"sourceId": "$_id"},
+                "pipeline": [
+                    {
+                        "$match": {
+                            "$expr": {
+                                "$eq": [{"$toString": "$_id"}, "$$sourceId"]
+                            }
+                        }
+                    },
+                    {"$limit": 1},
+                    {"$project": {"_id": 1}},
+                ],
+                "as": "source_match",
+            }
+        },
+        {"$match": {"source_match": {"$eq": []}}},
+        {"$project": {"_id": 0, "source_document_id": "$_id"}},
+    ]
+
+    stale_ids: list[str] = []
+    stats = {"stale_documents": 0, "chunks_deleted": 0}
+
+    def flush() -> None:
+        if not stale_ids:
+            return
+        result = target_collection.delete_many(
+            {
+                "source_collection": source_collection,
+                "source_document_id": {"$in": list(stale_ids)},
+            }
+        )
+        stats["chunks_deleted"] += result.deleted_count
+        stale_ids.clear()
+
+    for row in target_collection.aggregate(pipeline, allowDiskUse=True):
+        source_document_id = row.get("source_document_id")
+        if not source_document_id:
+            continue
+        stale_ids.append(str(source_document_id))
+        stats["stale_documents"] += 1
+        if len(stale_ids) >= batch_size:
+            flush()
+
+    flush()
+    return stats
+
+
 def _document_token_estimate(document_chunks: list[ChunkRecord]) -> int:
     raw_tokens = sum(estimate_token_count(chunk.text) for chunk in document_chunks)
     # Add headroom because the Atlas tokenizer is stricter than our whitespace estimate.

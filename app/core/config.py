@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     index_batch_token_budget: int = 80000
     vector_num_candidates_factor: int = 20
     vector_sync_state_file: str = ".runtime/vector_sync_state.json"
+    vector_sync_invalid_resume_catchup: bool = True
+    vector_sync_catchup_lookback_minutes: int = 1440
 
     model_config = SettingsConfigDict(
         env_file=".env",
